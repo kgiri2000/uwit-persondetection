@@ -1,190 +1,187 @@
 import cv2
 from ultralytics import YOLO
 import numpy as np
-import pygame  # Replaced winsound
+import pygame
 import time
 import csv
 import os
+from deep_sort_realtime.deepsort_tracker import DeepSort
 
-# Configuration
 CAMERA_INDEX = 0
 MODEL_PATH = "yolov8n.pt"
 MIN_AREA_RATIO = 0.03
-#Global cooldown, later we can implement, per person cool down.
-GLOBAL_BEEP_COOLDOWN = 10  # seconds
+GLOBAL_BEEP_COOLDOWN = 10
 CSV_FILE = "visitor_log.csv"
-SOUND_FILE = "notification.wav"  # use your WAV file
-active_message = []
+SOUND_FILE = "notification.wav"
 MESSAGE_DURATION = 5
+BEEP_DELAY = 5
+CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for person detection
 
-# Initialize Pygame mixer for sound
+deepsort = DeepSort(
+    max_age=30,
+    n_init=3,
+    max_cosine_distance=0.3,
+    nn_budget=100
+)
+
 pygame.mixer.init()
-beep_sound = pygame.mixer.Sound(SOUND_FILE)
 
-# Play sound
+# Check if sound file exists
+if not os.path.exists(SOUND_FILE):
+    print(f"Warning: {SOUND_FILE} not found. Beeps will be silent.")
+    beep_sound = None
+else:
+    beep_sound = pygame.mixer.Sound(SOUND_FILE)
+
 def play_beep():
-    """
-    Play the WAV file once (non-blocking).
-    """
-    beep_sound.play()
+    if beep_sound:
+        beep_sound.play()
 
-# Initialize CSV
 if not os.path.exists(CSV_FILE):
-    with open(CSV_FILE, mode='w', newline='') as file:
-        writer = csv.writer(file)
+    with open(CSV_FILE, 'w', newline='') as f:
+        writer = csv.writer(f)
         writer.writerow(["Person_ID", "First_Seen", "Last_Seen", "Duration_sec"])
 
-# Load model and camera
-# Current YOLOv8 model
 model = YOLO(MODEL_PATH)
+
 cap = cv2.VideoCapture(CAMERA_INDEX)
 if not cap.isOpened():
-    print("[ERROR] Could not open webcam.")
-    exit()
+    print(f"Error: Cannot open camera {CAMERA_INDEX}")
+    exit(1)
 
-# Create full screen
-cv2.namedWindow("Person Detection", cv2.WND_PROP_FULLSCREEN)
-cv2.setWindowProperty("Person Detection", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-
-# Tracking variables
 current_ids = set()
- # global cooldown
-last_beep_time = 0 
- # track_id -> {"first_seen": timestamp, "last_seen": timestamp}
+last_beep_time = 0
+person_times = {}
+completed_durations = []
 beeped_ids = set()
-BEEP_DELAY = 5
-person_times = {}   
- # list of durations for finished visits
-completed_durations = [] 
+active_messages = []
 
-# Main loop
 while True:
-    #ret is boolean( True if frame is successfully read)
-    #frame = current image of the camera( 2D array of pixels ( 460,640,3))
     ret, frame = cap.read()
-    #if not captured, skip the iteration
     if not ret:
         continue
-    
+
     frame_area = frame.shape[0] * frame.shape[1]
 
-    # Run YOLO tracking
-    #Track a person, class 0
-    results = model.track(frame, classes=[0], persist=True, verbose=False)
+    results = model(frame)[0]
+
+    dets_xyxy = []
+    dets_conf = []
+
+    # Filter for person class (class 0) with confidence threshold
+    for box in results.boxes:
+        if int(box.cls[0]) == 0:  # Person class only
+            conf = float(box.conf[0])
+            if conf >= CONFIDENCE_THRESHOLD:  # Add confidence check
+                x1, y1, x2, y2 = box.xyxy[0].cpu().tolist()
+                dets_xyxy.append([float(x1), float(y1), float(x2), float(y2)])
+                dets_conf.append(float(conf))
+
+    detections = []
+    for (x1, y1, x2, y2), conf in zip(dets_xyxy, dets_conf):
+        detections.append(([float(x1), float(y1), float(x2), float(y2)], float(conf), 'person'))
+
+    tracks = deepsort.update_tracks(detections, frame=frame)
+
     new_ids = set()
-    boxes = results[0].boxes
+    now = time.time()
 
-    if boxes.id is not None:
-        for idx, track_id in enumerate(boxes.id.cpu().numpy().astype(int)):
-            x1, y1, x2, y2 = boxes.xyxy[idx].cpu().numpy()
-            box_area = (x2 - x1) * (y2 - y1)
-            if box_area / frame_area >= MIN_AREA_RATIO:
-                new_ids.add(track_id)
-                if track_id not in person_times:
-                    person_times[track_id] = {"first_seen": time.time(), "last_seen": time.time()}
-                else:
-                    person_times[track_id]["last_seen"] = time.time()
+    for track in tracks:
+        if not track.is_confirmed():
+            continue
 
-    # Global cooldown beep
-    newcomers = new_ids - current_ids
-    current_time = time.time()
-    # Don't beep right away, wait for 5 sec for each id
-    # if newcomers and (current_time - last_beep_time >= GLOBAL_BEEP_COOLDOWN):
-    #     print(f"[INFO] New person(s) detected! IDs: {newcomers}")
-    #     play_beep()  # play WAV file
-    #     last_beep_time = current_time
-    '''
-    If person stays with same id for 5 sec, it will notify
-    Previous version would notify for each new ids
-    Since, this is deep model, same person was getting different ids in differnt frames
-    rendering a new id.
+        tid = int(track.track_id)
+        l, t, w, h = track.to_ltwh()
+        x1, y1, x2, y2 = int(l), int(t), int(l + w), int(t + h)
 
-    Later work: Stronger re-identification tracker like: DeepSort or ByteTrack
-    '''
-    for track_id in new_ids:
-        if track_id in person_times:
-            first_seen = person_times[track_id]["first_seen"]
-            duration = current_time - first_seen
-             #Check if the person is new enough, 
-            if(duration >= BEEP_DELAY and
-                track_id not in beeped_ids and
-                (current_time - last_beep_time >= GLOBAL_BEEP_COOLDOWN)):
-                print(f"[INFO] Person {track_id} confirmed after {BEEP_DELAY} sec")
-                msg = f"Person {track_id} confirmed after {BEEP_DELAY} sec."
-                play_beep()
-                last_beep_time = current_time
-                '''
-                Adding the person to the beeped id, later this can cause stack overflow.
-                Need to find the better solution
-                '''
-                beeped_ids.add(track_id)
-                active_message.append((msg, time.time()))
+        if (w * h) / frame_area < MIN_AREA_RATIO:
+            continue
 
+        new_ids.add(tid)
 
-    # Check for people who left frame
+        if tid not in person_times:
+            person_times[tid] = {"first_seen": now, "last_seen": now}
+        else:
+            person_times[tid]["last_seen"] = now
+
+    for tid in new_ids:
+        first_seen = person_times[tid]["first_seen"]
+        duration = now - first_seen
+
+        if (duration >= BEEP_DELAY and
+            tid not in beeped_ids and
+            (now - last_beep_time >= GLOBAL_BEEP_COOLDOWN)):
+
+            msg = f"Person {tid} confirmed after {BEEP_DELAY} sec."
+            play_beep()
+            beeped_ids.add(tid)
+            last_beep_time = now
+            active_messages.append((msg, now))
+
     left_ids = current_ids - new_ids
-    #Only record if they stay for more than 10 sec
-    for track_id in left_ids:
-        first = person_times[track_id]["first_seen"]
-        last = person_times[track_id]["last_seen"]
-        duration = round(last - first, 2)
-        if duration >= 5:
-            completed_durations.append(duration)
-            with open(CSV_FILE, mode='a', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow([track_id,
-                                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(first)),
-                                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last)),
-                                duration])
+    for tid in left_ids:
+        first = person_times[tid]["first_seen"]
+        last = person_times[tid]["last_seen"]
+        dur = last - first
 
-        person_times.pop(track_id)
-        beeped_ids.discard(track_id)
+        if dur >= 5:
+            completed_durations.append(dur)
+            with open(CSV_FILE, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    tid,
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(first)),
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last)),
+                    round(dur, 2)
+                ])
+
+        del person_times[tid]
+        beeped_ids.discard(tid)
+
+    # Prevent memory leak by limiting completed_durations list
+    if len(completed_durations) > 1000:
+        completed_durations = completed_durations[-1000:]
 
     current_ids = new_ids
-    person_count = len(current_ids)
-    total_unique = len(completed_durations) + len(current_ids)
-    avg_duration = round(np.mean(completed_durations), 2) if completed_durations else 0
 
-    # Annotate frame
-    annotated_frame = results[0].plot()
-    cv2.putText(annotated_frame, f"Current in Frame: {person_count}", (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(annotated_frame, f"Total Unique Visitors: {total_unique}", (20, 80),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-    cv2.putText(annotated_frame, f"Avg Duration: {avg_duration} sec", (20, 120),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+    annotated = frame.copy()
+
+    for track in tracks:
+        if not track.is_confirmed():
+            continue
+
+        tid = int(track.track_id)
+        l, t, w, h = track.to_ltwh()
+        x1, y1, x2, y2 = int(l), int(t), int(l + w), int(t + h)
+
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0,255,0), 2)
+        cv2.putText(annotated, f"ID {tid}", (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+
+    cv2.putText(annotated, f"Current: {len(current_ids)}", (20,40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+
+    total = len(completed_durations) + len(current_ids)
+    cv2.putText(annotated, f"Total Visitors: {total}", (20,80),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,0), 2)
+
+    avg = round(np.mean(completed_durations), 2) if completed_durations else 0
+    cv2.putText(annotated, f"Avg Duration: {avg}s", (20,120),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
+
+    # Clean up old messages efficiently
+    active_messages = [(msg, ts) for msg, ts in active_messages if now - ts < MESSAGE_DURATION]
     
-    #Display the message
-    current_time = time.time()
-    y_offset = annotated_frame.shape[0]-20
-    for msg, ts in list(active_message):
-        if current_time - ts < MESSAGE_DURATION:
-            cv2.putText(annotated_frame, msg, (20, y_offset),
-                        cv2.FONT_HERSHEY_PLAIN, 1.2, (0,0,0), 1)
-            #stack message vertically
-            y_offset -=20 
-        else:
-            active_message.remove((msg, ts))
+    y_offset = annotated.shape[0] - 20
+    for msg, ts in active_messages:
+        cv2.putText(annotated, msg, (20, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,0), 2)
+        y_offset -= 25
 
-    # Display frame
-    cv2.imshow("Person Detection", annotated_frame)
+    cv2.imshow("Person Detection", annotated)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# Cleanup
-# Log remaining people still in frame
-for track_id in list(person_times.keys()):
-    first = person_times[track_id]["first_seen"]
-    last = person_times[track_id]["last_seen"]
-    duration = round(last - first, 2)
-    completed_durations.append(duration)
-    with open(CSV_FILE, mode='a', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow([track_id,
-                         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(first)),
-                         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last)),
-                         duration])
-
 cap.release()
 cv2.destroyAllWindows()
-pygame.mixer.quit()  #clean up sound
+pygame.mixer.quit()
