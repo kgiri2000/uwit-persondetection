@@ -18,6 +18,9 @@ from face_recognition_module import FaceRecognizer
 from heatmap_module import HeatmapGenerator
 from dashboard import start_dashboard, update_dashboard_stats, update_latest_frame
 
+DETECTION_SIZE = (1280, 720)  # YOLO runs at 720p internally
+frame_count = 0
+
 # Initialize DeepSort
 deepsort = DeepSort(
     max_age=30,
@@ -73,7 +76,6 @@ print(f"\n{'='*60}")
 print(f"Starting dashboard at: http://localhost:{DASHBOARD_PORT}")
 print(f"{'='*60}\n")
 
-# Pass heatmap generator to dashboard
 from dashboard import set_heatmap_generator
 set_heatmap_generator(heatmap_gen)
 
@@ -91,22 +93,39 @@ try:
         if not ret:
             continue
 
+        frame_count += 1
         frame_area = frame.shape[0] * frame.shape[1]
 
-        # YOLO Detection
-        results = model(frame)[0]
+
+        small_frame = cv2.resize(frame, DETECTION_SIZE)
+
+        # YOLO on downscaled frame
+        results = model(small_frame)[0]
+
+        # Scaling factors back to full resolution
+        scale_x = frame.shape[1] / DETECTION_SIZE[0]
+        scale_y = frame.shape[0] / DETECTION_SIZE[1]
 
         dets_xyxy = []
         dets_conf = []
 
+        # Extract detections and scale them back to 4K resolution
         for box in results.boxes:
-            if int(box.cls[0]) == 0:  # Person class only
+            if int(box.cls[0]) == 0:  # Person only
                 conf = float(box.conf[0])
                 if conf >= CONFIDENCE_THRESHOLD:
                     x1, y1, x2, y2 = box.xyxy[0].cpu().tolist()
+
+                    # Scale back to original frame resolution
+                    x1 *= scale_x
+                    y1 *= scale_y
+                    x2 *= scale_x
+                    y2 *= scale_y
+
                     dets_xyxy.append([float(x1), float(y1), float(x2), float(y2)])
                     dets_conf.append(float(conf))
 
+        # Build DeepSort-compatible structure
         detections = []
         for (x1, y1, x2, y2), conf in zip(dets_xyxy, dets_conf):
             detections.append(([float(x1), float(y1), float(x2), float(y2)], float(conf), 'person'))
@@ -120,6 +139,7 @@ try:
         new_ids = set()
         now = time.time()
 
+        # Handle tracking logic
         for track in tracks:
             if not track.is_confirmed():
                 continue
@@ -133,7 +153,7 @@ try:
 
             new_ids.add(tid)
 
-            # Face recognition for new person or periodically
+            # Face recognition
             if tid not in person_face_map or (int(now * 30) % 30 == 0):
                 face_id = face_recognizer.recognize_face(frame, (x1, y1, x2, y2))
                 if face_id:
@@ -144,7 +164,7 @@ try:
             else:
                 person_times[tid]["last_seen"] = now
 
-        # Beep notification
+        # Beep notifications
         for tid in new_ids:
             first_seen = person_times[tid]["first_seen"]
             duration = now - first_seen
@@ -213,25 +233,12 @@ try:
 
             face_id = person_face_map.get(tid, "Unknown")
             
-            # Draw rectangle
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0,255,0), 2)
-            
-            # Draw label background
             label = f"ID {tid} - {face_id}"
             (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.rectangle(annotated, (x1, y1 - label_height - 10), (x1 + label_width, y1), (0,255,0), -1)
-            
-            # Draw label text
             cv2.putText(annotated, label, (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 2)
-
-        # Display stats on frame
-        cv2.putText(annotated, f"Live: {stats['live_count']}", (20,40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
-        cv2.putText(annotated, f"Unique: {stats['unique_visitors']}", (20,80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-        cv2.putText(annotated, f"Avg: {stats['avg_duration']}s", (20,120),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
 
         # Display messages
         active_messages = [(msg, ts) for msg, ts in active_messages if now - ts < MESSAGE_DURATION]
@@ -240,17 +247,12 @@ try:
         for msg, ts in active_messages:
             (msg_width, msg_height), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
             cv2.rectangle(annotated, (15, y_offset - msg_height - 5), (25 + msg_width, y_offset + 5), (0,0,0), -1)
-            
             cv2.putText(annotated, msg, (20, y_offset),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
             y_offset -= 35
 
-        # Update latest frame for dashboard
+        # Send frame to dashboard
         update_latest_frame(annotated)
-
-        # Check for 'q' key press to quit (console input)
-        # Note: cv2.imshow is disabled due to GUI issues
-        # View the feed through the web dashboard at http://localhost:5000
 
 except KeyboardInterrupt:
     print("\n\nStopping detection...")

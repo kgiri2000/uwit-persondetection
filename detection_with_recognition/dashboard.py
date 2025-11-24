@@ -27,7 +27,7 @@ latest_frame = None
 frame_lock = threading.Lock()
 heatmap_generator = None
 
-# Updated HTML Template — heatmap removed, camera feed full width, stats overlay added
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -42,16 +42,21 @@ HTML_TEMPLATE = """
             background: #111;
             font-family: Arial, sans-serif;
             color: white;
+            height: 100vh;
+            overflow: hidden; /* Prevent scrollbars */
         }
         .video-container {
             position: relative;
             width: 100%;
-            max-width: 1500px;
-            margin: 0 auto;
+            height: 100vh; /* Full browser height */
+            margin: 0;
+            padding: 0;
         }
         #camera-feed {
             width: 100%;
-            border-radius: 10px;
+            height: 100%;
+            object-fit: cover; /* Make video fill screen */
+            border-radius: 0;
             display: block;
         }
         .overlay-stats {
@@ -63,6 +68,7 @@ HTML_TEMPLATE = """
             border-radius: 10px;
             font-size: 22px;
             letter-spacing: 1px;
+            z-index: 5;
         }
         .pulse {
             display: inline-block;
@@ -101,6 +107,8 @@ HTML_TEMPLATE = """
 
 <body>
     <div class="video-container">
+
+        <!-- OVERLAY STATS -->
         <div class="overlay-stats">
             <span class="pulse"></span>
             Live: <span id="live-count">0</span>  
@@ -108,6 +116,7 @@ HTML_TEMPLATE = """
             Total Visits: <span id="total-visits">0</span>
         </div>
 
+        <!-- FULLSCREEN CAMERA -->
         <img id="camera-feed" src="/video_feed" alt="Camera Feed">
     </div>
 </body>
@@ -142,14 +151,13 @@ def video_feed():
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
-
-
 def update_dashboard_stats(stats):
     global dashboard_stats
     dashboard_stats = stats
 
 
 def update_latest_frame(frame):
+    #Update the frame shown on the dashboard
     global latest_frame
     with frame_lock:
         latest_frame = frame.copy()
@@ -161,4 +169,5 @@ def set_heatmap_generator(generator):
 
 
 def start_dashboard():
+    #Start the Flask dashboard
     app.run(host='0.0.0.0', port=DASHBOARD_PORT, debug=False, threaded=True, use_reloader=False)
