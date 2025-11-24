@@ -6,4 +6,7 @@ filterpy
 scikit-learn
 torch 
 torchvision
-
+deep_sort_realtime
+opencv-contrib-python
+flask
+opencv-contrib-python
