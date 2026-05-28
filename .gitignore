@@ -1,2 +1,20 @@
+# Virtual environments
+venv/
 .venv/
-.vevn/
+env/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# IDEs & System files
+.vscode/
+.idea/
+.DS_Store
+
+# Application logs
+kiosk_app/visitor_log.csv
+
+# Environment config containing secrets
+.env
+kiosk_app/.env

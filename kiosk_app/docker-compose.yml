@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  uwit-kiosk:
+    build: .
+    container_name: uwit-persondetection-kiosk
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./visitor_log.csv:/app/visitor_log.csv
+    restart: unless-stopped

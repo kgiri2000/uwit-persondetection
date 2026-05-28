@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UWIT Intercom Kiosk & Person Detection</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Background animated glow blobs -->
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+
+    <!-- Role Selection Overlay Modal -->
+    <div id="role-modal" class="modal-overlay">
+        <div class="modal-card">
+            <h1>UWIT Intercom</h1>
+            <p class="modal-subtitle">Service Center Person Detection & Communication Portal</p>
+            
+            <!-- Password Entry -->
+            <div class="input-group" style="max-width: 340px; margin: 0 auto 30px auto;">
+                <input type="password" id="portal-password" placeholder="Enter Access Password" autocomplete="current-password">
+                <span id="password-error" style="color: #ef4444; font-size: 0.85rem; display: block; margin-top: 8px;" class="hidden">Incorrect Access Password</span>
+            </div>
+            
+            <div class="role-cards">
+                <!-- Host Card -->
+                <div class="role-card" id="btn-select-host">
+                    <div class="role-icon">📺</div>
+                    <h3>Host (Kiosk)</h3>
+                    <p>Deploy at the service window. Activates YOLO person tracking and starts the client intercom kiosk.</p>
+                </div>
+                
+                <!-- Guest Card -->
+                <div class="role-card" id="guest-card-container">
+                    <div class="role-icon">👤</div>
+                    <h3>Guest (Employee)</h3>
+                    <p>Connect from your workstation. View the service area, receive notifications, and talk to visitors.</p>
+                    <div class="input-group">
+                        <input type="text" id="guest-name" placeholder="Enter Employee Name" autocomplete="off">
+                    </div>
+                    <button class="btn btn-primary" id="btn-select-guest">Join as Guest</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Application UI (Hidden by default) -->
+    <div id="app-container" class="app-layout hidden">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-brand">
+                <span class="pulse-dot" id="status-dot"></span>
+                <span class="brand-text">UWIT KIOSK PORTAL</span>
+                <span class="role-badge" id="role-badge">Host</span>
+            </div>
+            
+            <div class="header-controls">
+                <div class="time-display" id="time-display">--:--:--</div>
+                <button class="btn btn-secondary" id="btn-toggle-sidebar">Show Console</button>
+                <button class="btn btn-secondary btn-icon" id="btn-toggle-sound" title="Toggle Sound">
+                    <span id="sound-icon">🔊</span>
+                </button>
+                <button class="btn btn-danger" id="btn-disconnect">Disconnect</button>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="app-main">
+            <!-- Left Side: Main Large Video Display -->
+            <section class="video-workspace">
+                <div class="main-video-wrapper">
+                    <!-- Floating overlay log message -->
+                    <div id="video-overlay-log" class="video-overlay-log clear">
+                        <span id="video-overlay-status-dot" class="pulse-dot" style="width: 8px; height: 8px; box-shadow: 0 0 6px var(--color-primary);"></span>
+                        <span id="video-overlay-text">🟢 Service Window Clear</span>
+                    </div>
+
+                    <!-- Floating active participants grid (Zoom-like floating style) -->
+                    <div id="peers-grid" class="peers-floating-grid">
+                        <!-- Tiny self video -->
+                        <div class="peer-video-card self-card" id="self-card">
+                            <video id="self-mini-video" class="peer-mini-video" autoplay playsinline muted></video>
+                            <span class="peer-label">You (Local)</span>
+                        </div>
+                    </div>
+
+                    <!-- Host raw video element (used for capturing frames & fallback) -->
+                    <video id="local-video" class="video-element video-inactive" autoplay playsinline muted></video>
+                    
+                    <!-- Host annotated video feed (displayed as img) -->
+                    <img id="detection-feed" class="video-element video-inactive" alt="Annotated Feed">
+                    
+                    <!-- Guest remote view grid of Host(s) -->
+                    <div id="remote-hosts-grid" class="remote-hosts-grid"></div>
+                    
+                    <!-- Placeholder when connecting/waiting -->
+                    <div id="video-placeholder" class="video-placeholder">
+                        <div class="placeholder-spinner"></div>
+                        <p id="placeholder-text">Initializing media sources...</p>
+                    </div>
+                </div>
+
+                <!-- Video control overlay bar -->
+                <div class="video-control-bar">
+                    <span class="video-status-msg" id="video-status-msg">Camera: Standby</span>
+                    <div class="video-actions">
+                        <button class="btn btn-glass active" id="btn-toggle-detection" style="display: none;">Detection: ON</button>
+                        <button class="btn btn-glass active" id="btn-toggle-cam">Toggle Video</button>
+                        <button class="btn btn-glass active" id="btn-toggle-mic">Toggle Mic</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Side: Sidebar Panel Drawer (slid out by default) -->
+            <aside class="app-sidebar collapsed">
+
+                <!-- Person Detection Stats / Logs -->
+                <div class="sidebar-section panel-logs flex-grow">
+                    <div class="section-header-row">
+                        <h3>Detection & Kiosk Logs</h3>
+                        <a href="/static/visitor_log.csv" download class="btn btn-mini" id="btn-download-log">Export CSV</a>
+                    </div>
+                    <div class="log-console" id="log-console">
+                        <div class="log-entry system">[System] Portal loaded. Select role to initialize.</div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- WebAudio element for browser-side beep play -->
+    <audio id="beep-player" src="/static/notification.wav" preload="auto"></audio>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
