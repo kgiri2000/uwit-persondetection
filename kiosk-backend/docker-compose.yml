@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  video_server:
+    build: .
+    container_name: local_video_chat
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: always

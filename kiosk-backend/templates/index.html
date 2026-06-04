@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UW Kiosk Session</title>
+    <style>
+        :root {
+            --uw-gold: #ffc425;
+            --uw-brown: #4e3629;
+            --dark-bg: #121212;
+            --card-bg: #1e1e1e;
+        }
+
+        body {
+            margin: 0; padding: 0; font-family: system-ui, sans-serif;
+            background-color: var(--dark-bg); color: #ffffff;
+            height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+            position: relative; /* Required to anchor absolute children */
+        }
+
+        /* UPDATED: Guest Shelf now floats above everything else.
+           Using position: absolute and z-index: 100 
+        */
+        #guestShelf {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%); /* Centers the floating shelf */
+            z-index: 100;
+            display: flex; gap: 12px; padding: 10px;
+            background-color: rgba(10, 10, 10, 0.7); 
+            backdrop-filter: blur(8px);
+            border-radius: 12px;
+            overflow-x: auto;
+            max-width: 90vw;
+            min-height: 0; transition: all 0.3s ease;
+        }
+        #guestShelf:empty { padding: 0; height: 0; background-color: transparent; }
+        #guestShelf .video-box { width: 180px; height: 110px; flex-shrink: 0; }
+
+        #hostContainer {
+            flex: 1; display: grid; grid-template-columns: 1fr;
+            gap: 10px; padding: 10px; box-sizing: border-box;
+            width: 100%; height: 100%; /* Ensures it fills the screen beneath the floating shelf */
+        }
+        #hostContainer.split-screen { grid-template-columns: 1fr 1fr; }
+
+        .video-box {
+            position: relative; background-color: var(--card-bg);
+            border-radius: 8px; overflow: hidden;
+            display: flex; align-items: center; justify-content: center;
+            border: 2px solid #333;
+        }
+        .video-box.host-primary { border-color: var(--uw-gold); }
+        video { width: 100%; height: 100%; object-fit: cover; background-color: #000; }
+        .local-video { transform: scaleX(-1); }
+
+        .video-label {
+            position: absolute; bottom: 10px; left: 10px;
+            background: rgba(0, 0, 0, 0.7); padding: 4px 12px;
+            border-radius: 4px; font-size: 14px; font-weight: 500;
+            border-left: 3px solid var(--uw-gold);
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        
+        .ai-status { font-size: 11px; color: #aaa; }
+        .ai-status.active { color: #4CAF50; }
+        .ai-status.detecting { color: #ffc425; }
+
+        #controlsPanel {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 15px; background: rgba(20, 20, 20, 0.85);
+            padding: 12px 24px; border-radius: 30px; backdrop-filter: blur(8px);
+            z-index: 10; border: 1px solid #444;
+        }
+        button {
+            background: #333; border: none; color: white; padding: 10px 18px;
+            border-radius: 20px; cursor: pointer; font-weight: 600; transition: 0.2s;
+        }
+        button:hover { background: #444; }
+        .danger-btn { background: #cc3333 !important; }
+        .danger-btn:hover { background: #e53935 !important; }
+    </style>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+</head>
+<body>
+
+    <audio id="chimePlayer" src="/static/chime.mp3" preload="auto"></audio>
+
+    <div id="guestShelf"></div>
+    <div id="hostContainer"></div>
+
+    <div id="controlsPanel">
+        <button id="mediaBtn" onclick="initiateLocalMedia()">🎥 Start Kiosk</button>
+        <button id="videoToggleBtn" onclick="toggleVideo()" style="display:none;">📹 Stop Video</button>
+        <button id="audioToggleBtn" onclick="toggleAudio()" style="display:none;">🎤 Mute Mic</button>
+        <button id="disconnectBtn" class="danger-btn" onclick="window.location.href='/logout'">🚪 Leave</button>
+    </div>
+
+    <script>
+        const MY_ROLE = "{{ role }}";
+        const socket = io();
+        let localStream;
+        const peers = {};
+
+        let objectDetector;
+        let aiTrackingInterval;
+        let personFirstSeenTime = null;
+        let alertCooldown = false;
+        const ALERT_THRESHOLD_MS = 5000;
+        const COOLDOWN_MS = 30000;
+
+        const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+        const hostContainer = document.getElementById('hostContainer');
+        const guestShelf = document.getElementById('guestShelf');
+        const chimePlayer = document.getElementById('chimePlayer');
+
+        async function initiateLocalMedia() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('mediaBtn').style.display = 'none'; // Hide the start button
+                
+                // Show the new toggle controls
+                document.getElementById('videoToggleBtn').style.display = 'inline-block';
+                document.getElementById('audioToggleBtn').style.display = 'inline-block';
+                
+                addVideoTrackElement(socket.id, localStream, MY_ROLE, true);
+                socket.emit('ready-to-stream', { role: MY_ROLE });
+
+                if (MY_ROLE === 'host') loadAIEngine();
+            } catch (err) {
+                console.error("Hardware access denied:", err);
+                alert("Please allow camera and mic permissions.");
+            }
+        }
+
+        // --- NEW: Toggle Media Functions ---
+        function toggleVideo() {
+            if (!localStream) return;
+            const videoTrack = localStream.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = !videoTrack.enabled; // Flip the current state
+                const btn = document.getElementById('videoToggleBtn');
+                btn.innerText = videoTrack.enabled ? "📹 Stop Video" : "🚫 Start Video";
+                videoTrack.enabled ? btn.classList.remove('danger-btn') : btn.classList.add('danger-btn');
+            }
+        }
+
+        function toggleAudio() {
+            if (!localStream) return;
+            const audioTrack = localStream.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !audioTrack.enabled; // Flip the current state
+                const btn = document.getElementById('audioToggleBtn');
+                btn.innerText = audioTrack.enabled ? "🎤 Mute Mic" : "🔇 Unmute Mic";
+                audioTrack.enabled ? btn.classList.remove('danger-btn') : btn.classList.add('danger-btn');
+            }
+        }
+        // -----------------------------------
+
+        async function loadAIEngine() {
+            const statusEl = document.getElementById(`ai-status-${socket.id}`);
+            if (statusEl) statusEl.innerText = "AI Loading Model...";
+
+            objectDetector = await cocoSsd.load();
+            
+            if (statusEl) {
+                statusEl.innerText = "AI Active";
+                statusEl.classList.add('active');
+            }
+
+            const localVideoEl = document.getElementById(`video-${socket.id}`);
+            
+            aiTrackingInterval = setInterval(() => {
+                // Do not run AI tracking if the user paused their video
+                if (localStream && localStream.getVideoTracks()[0].enabled) {
+                    detectPerson(localVideoEl, statusEl);
+                } else if (statusEl) {
+                    statusEl.innerText = "Camera Paused";
+                    statusEl.classList.remove('detecting', 'active');
+                }
+            }, 250);
+        }
+
+        async function detectPerson(videoElement, statusEl) {
+            if (!objectDetector || videoElement.readyState !== 4) return;
+
+            const predictions = await objectDetector.detect(videoElement);
+            const personDetected = predictions.some(p => p.class === 'person');
+
+            if (personDetected) {
+                if (statusEl) {
+                    statusEl.innerText = "Person Detected!";
+                    statusEl.classList.add('detecting');
+                }
+
+                if (!personFirstSeenTime) {
+                    personFirstSeenTime = Date.now();
+                } else {
+                    const timeVisible = Date.now() - personFirstSeenTime;
+                    if (timeVisible >= ALERT_THRESHOLD_MS && !alertCooldown) {
+                        triggerAudioAlert();
+                    }
+                }
+            } else {
+                personFirstSeenTime = null;
+                if (statusEl) {
+                    statusEl.innerText = "AI Active (Clear)";
+                    statusEl.classList.remove('detecting');
+                    statusEl.classList.add('active');
+                }
+            }
+        }
+
+        function triggerAudioAlert() {
+            chimePlayer.play().catch(e => console.error("Audio block:", e));
+            alertCooldown = true;
+            personFirstSeenTime = null; 
+
+            setTimeout(() => {
+                alertCooldown = false;
+            }, COOLDOWN_MS);
+        }
+
+        socket.on('peer-joined', async (data) => {
+            if (!localStream) return; 
+            
+            const peerId = data.id;
+            const pc = createPeerConnection(peerId, data.role);
+            peers[peerId] = pc;
+
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.emit('signal', { target: peerId, sdp: pc.localDescription });
+            } catch (e) {
+                console.error("Error creating WebRTC offer:", e);
+            }
+        });
+
+        socket.on('signal', async (data) => {
+            const senderId = data.sender;
+            let pc = peers[senderId];
+            
+            if (!pc && localStream) {
+                pc = createPeerConnection(senderId, data.role);
+                peers[senderId] = pc;
+            }
+
+            if (!pc) return; 
+
+            try {
+                if (data.sdp) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    
+                    if (data.sdp.type === 'offer') {
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        socket.emit('signal', { target: senderId, sdp: pc.localDescription });
+                    }
+                } else if (data.candidate) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            } catch (e) {
+                console.error("Signal processing error:", e);
+            }
+        });
+
+        socket.on('peer-left', (peerId) => {
+            removeVideoTrackElement(peerId);
+            if (peers[peerId]) { peers[peerId].close(); delete peers[peerId]; }
+            evaluateHostLayout();
+        });
+
+        function createPeerConnection(peerId, peerRole) {
+            const pc = new RTCPeerConnection(rtcConfig);
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+            pc.onicecandidate = (event) => {
+                if (event.candidate) socket.emit('signal', { target: peerId, candidate: event.candidate });
+            };
+            pc.ontrack = (event) => addVideoTrackElement(peerId, event.streams[0], peerRole, false);
+            return pc;
+        }
+
+        function addVideoTrackElement(id, stream, role, isLocal) {
+            if (document.getElementById(`wrap-${id}`)) return;
+
+            const box = document.createElement('div');
+            box.id = `wrap-${id}`;
+            box.className = 'video-box';
+
+            const video = document.createElement('video');
+            video.id = `video-${id}`; 
+            video.srcObject = stream;
+            video.autoplay = true;
+            video.playsInline = true;
+            if (isLocal) {
+                video.muted = true;
+                video.classList.add('local-video');
+            }
+
+            const label = document.createElement('div');
+            label.className = 'video-label';
+            
+            const roleText = document.createElement('span');
+            roleText.innerText = `${role.toUpperCase()} ${isLocal ? '(You)' : ''}`;
+            label.appendChild(roleText);
+
+            if (isLocal && role === 'host') {
+                const aiStatus = document.createElement('span');
+                aiStatus.id = `ai-status-${id}`;
+                aiStatus.className = 'ai-status';
+                aiStatus.innerText = 'AI Offline';
+                label.appendChild(aiStatus);
+            }
+
+            box.appendChild(video);
+            box.appendChild(label);
+
+            if (role === 'host') {
+                box.classList.add('host-primary');
+                hostContainer.appendChild(box);
+                evaluateHostLayout();
+            } else {
+                guestShelf.appendChild(box);
+            }
+        }
+
+        function removeVideoTrackElement(id) {
+            const el = document.getElementById(`wrap-${id}`);
+            if (el) el.remove();
+        }
+
+        function evaluateHostLayout() {
+            const hostCount = hostContainer.getElementsByClassName('host-primary').length;
+            if (hostCount >= 2) hostContainer.classList.add('split-screen');
+            else hostContainer.classList.remove('split-screen');
+        }
+    </script>
+</body>
+</html>

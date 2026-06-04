@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --color-uw-gold: #ffc425;
+  --color-uw-brown: #4e3629;
+  --color-uw-darkBg: #121212;
+  --color-uw-cardBg: #1e1e1e;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-uw-darkBg);
+  color: #ffffff;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  overflow: hidden;
+  height: 100vh;
+}

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UW Portal Login</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #1a1a1a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: #2a2a2a; padding: 30px; border-radius: 8px; width: 100%; max-width: 350px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        h2 { text-align: center; margin-top: 0; color: #ffc425; }
+        .group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-size: 14px; }
+        input, select { width: 100%; padding: 10px; box-sizing: border-box; background: #3a3a3a; border: 1px solid #555; color: white; border-radius: 4px; font-size: 16px; }
+        button { width: 100%; padding: 12px; background: #4e3629; border: none; color: white; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 16px; transition: background 0.2s; }
+        button:hover { background: #634635; }
+        .error { color: #ff6b6b; font-size: 14px; text-align: center; margin-top: 10px; display: none; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>UW Kiosk System</h2>
+        <div class="group">
+            <label for="password">Password</label>
+            <input type="password" id="password" required>
+        </div>
+        <div class="group">
+            <label for="role">Select Access Mode</label>
+            <select id="role">
+                <option value="guest">Guest (Remote Operator)</option>
+                <option value="host">Host (Kiosk Console)</option>
+            </select>
+        </div>
+        <button onclick="submitLogin()">Enter Room</button>
+        <div class="error" id="errorMsg"></div>
+    </div>
+
+    <script>
+        async function submitLogin() {
+            const password = document.getElementById('password').value;
+            const role = document.getElementById('role').value;
+            const errorMsg = document.getElementById('errorMsg');
+            
+            errorMsg.style.display = 'none';
+
+            const response = await fetch('/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password, role })
+            });
+
+            const data = await response.json();
+            
+            if (response.ok && data.success) {
+                window.location.href = '/';
+            } else {
+                errorMsg.innerText = data.message || 'Authentication Failed';
+                errorMsg.style.display = 'block';
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./kiosk-backend
+    container_name: kiosk_backend
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./kiosk-backend:/app
+    env_file:
+      - ./kiosk-backend/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: always
+
+  frontend:
+    build: ./kiosk-frontend
+    container_name: kiosk_frontend
+    ports:
+      - "5174:5173"
+    volumes:
+      - ./kiosk-frontend:/app
+      - /app/node_modules
+    environment:
+      - BACKEND_URL=http://backend:5000
+    restart: always
